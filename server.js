@@ -5,9 +5,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
-const path = require('path');
 const multer = require('multer');
-const path = require('path');
 
 // Import routes
 const diagnoseRoutes = require('./routes/diagnose');
@@ -16,6 +14,26 @@ const historyRoutes = require('./routes/history');
 // Initialize app
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ============= MULTER CONFIGURATION =============
+const storage = multer.memoryStorage();
+
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp'];
+  if (allowedTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Invalid file type. Only JPEG, PNG, WEBP are allowed'), false);
+  }
+};
+
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB
+  },
+  fileFilter: fileFilter
+});
 
 // ============= MIDDLEWARE =============
 
@@ -70,15 +88,16 @@ app.get('/', (req, res) => {
     version: '2.0.0',
     endpoints: {
       health: 'GET /health',
-      diagnose: 'POST /api/diagnose',
+      diagnose: 'POST /api/diagnose (multipart/form-data with "image" field)',
+      diagnose_base64: 'POST /api/diagnose (JSON with "image" field as base64)',
       history: 'GET /api/history',
       history_limit: 'GET /api/history?limit=10'
     }
   });
 });
 
-// API Routes
-app.use('/api/diagnose', diagnoseRoutes);
+// API Routes with multer for file uploads
+app.use('/api/diagnose', upload.single('image'), diagnoseRoutes);
 app.use('/api/history', historyRoutes);
 
 // 404 handler
@@ -98,57 +117,6 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ============= MULTER CONFIGURATION =============
-const storage = multer.memoryStorage(); // Store in memory for Cloudinary
-
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp'];
-  if (allowedTypes.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(new Error('Invalid file type. Only JPEG, PNG, WEBP are allowed'), false);
-  }
-};
-
-const upload = multer({
-  storage: storage,
-  limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB
-  },
-  fileFilter: fileFilter
-});
-
-// ============= ROUTES =============
-// Health check
-app.get('/health', (req, res) => {
-  res.status(200).json({
-    success: true,
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
-});
-
-// Root endpoint
-app.get('/', (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: '🌿 Cassava Disease Diagnosis API',
-    version: '2.0.0',
-    endpoints: {
-      health: 'GET /health',
-      diagnose: 'POST /api/diagnose (multipart/form-data with "image" field)',
-      diagnose_base64: 'POST /api/diagnose (JSON with "image" field as base64)',
-      history: 'GET /api/history',
-      history_limit: 'GET /api/history?limit=10'
-    }
-  });
-});
-
-// API Routes with multer for file uploads
-app.use('/api/diagnose', upload.single('image'), diagnoseRoutes);
-app.use('/api/history', historyRoutes);
-
 // ============= START SERVER =============
 
 app.listen(PORT, () => {
@@ -163,6 +131,7 @@ app.listen(PORT, () => {
 ║                                                              ║
 ║  🌍 Environment: ${process.env.NODE_ENV || 'development'}   ║
 ║  📦 Roboflow: ${process.env.ROBOFLOW_MODEL || 'Not set'}    ║
+║  ☁️ Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME || 'Not set'} ║
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝
   `);
