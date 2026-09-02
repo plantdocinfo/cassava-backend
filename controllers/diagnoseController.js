@@ -10,18 +10,38 @@ exports.diagnoseLeaf = async (req, res) => {
     let fileSize;
     let originalName = 'leaf.jpg';
 
+    console.log('📥 Request received:');
+    console.log('  - Content-Type:', req.headers['content-type']);
+    console.log('  - Has file:', !!req.file);
+    console.log('  - Has rawBody:', !!req.rawBody);
+    console.log('  - Body type:', typeof req.body);
+    console.log('  - Body length:', req.body ? req.body.length : 0);
+
     // ============================================================
-    // FIX: Handle multiple input formats for ESP32-CAM
+    // FIX: Handle ALL input formats for ESP32-CAM
     // ============================================================
 
-    // 1. Multipart/form-data (standard)
+    // 1. Multipart/form-data (standard upload)
     if (req.file) {
       imageBuffer = req.file.buffer;
       fileSize = req.file.size;
       originalName = req.file.originalname || 'leaf.jpg';
       console.log(`📷 Received multipart image: ${fileSize} bytes`);
     }
-    // 2. Base64 JSON
+    // 2. Raw binary (ESP32-CAM direct POST) - captured by our middleware
+    else if (req.rawBody && req.rawBody.length > 100) {
+      imageBuffer = req.rawBody;
+      fileSize = req.rawBody.length;
+      console.log(`📷 Received raw binary image: ${fileSize} bytes`);
+      
+      // Validate JPEG header
+      if (imageBuffer[0] === 0xFF && imageBuffer[1] === 0xD8) {
+        console.log('✅ Valid JPEG header detected');
+      } else {
+        console.log('⚠️ Unknown image format (not JPEG)');
+      }
+    }
+    // 3. Base64 JSON
     else if (req.body && req.body.image) {
       let base64Data = req.body.image;
       base64Data = base64Data.replace(/^data:image\/\w+;base64,/, '');
@@ -30,20 +50,20 @@ exports.diagnoseLeaf = async (req, res) => {
       originalName = req.body.filename || 'leaf.jpg';
       console.log(`📷 Received base64 image: ${fileSize} bytes`);
     }
-    // 3. Raw binary (ESP32-CAM direct POST)
+    // 4. Body as buffer (fallback)
     else if (req.body && Buffer.isBuffer(req.body)) {
       imageBuffer = req.body;
       fileSize = req.body.length;
-      console.log(`📷 Received raw binary image: ${fileSize} bytes`);
+      console.log(`📷 Received buffer image: ${fileSize} bytes`);
     }
-    // 4. Raw body as string (fallback)
+    // 5. Body as string (fallback)
     else if (req.body && typeof req.body === 'string' && req.body.length > 100) {
       try {
         imageBuffer = Buffer.from(req.body, 'base64');
         fileSize = imageBuffer.length;
         console.log(`📷 Received base64 string image: ${fileSize} bytes`);
       } catch (e) {
-        console.log('Failed to parse as base64, trying as raw text');
+        console.log('Failed to parse as base64');
         return res.status(400).json({
           success: false,
           error: 'Invalid image format. Please send JPEG or base64.'
@@ -57,9 +77,11 @@ exports.diagnoseLeaf = async (req, res) => {
         error: 'No image provided. Send as multipart/form-data, base64 JSON, or raw binary.',
         received: {
           hasFile: !!req.file,
+          hasRawBody: !!req.rawBody,
           hasBodyImage: !!(req.body && req.body.image),
           bodyType: typeof req.body,
-          bodyLength: req.body ? req.body.length : 0
+          bodyLength: req.body ? req.body.length : 0,
+          contentType: req.headers['content-type']
         }
       });
     }
