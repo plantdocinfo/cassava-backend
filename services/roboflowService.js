@@ -31,42 +31,57 @@ exports.detect = async (imageBuffer) => {
 
   try {
     // ============================================================
-    // FIX 1: Convert to base64 WITHOUT data URL prefix
+    // FIX: Convert to base64 WITHOUT data URL prefix
     // ============================================================
     const base64Image = imageBuffer.toString('base64');
+    console.log(`📤 Sending image to Roboflow (${(imageBuffer.length / 1024).toFixed(1)} KB)`);
 
-    // ============================================================
-    // FIX 2: Use JSON format (most reliable for Roboflow)
-    // ============================================================
     const url = `${ROBOFLOW_URL}/${ROBOFLOW_MODEL}?api_key=${ROBOFLOW_API_KEY}`;
-
-    const response = await axios({
-      method: 'POST',
-      url: url,
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      data: JSON.stringify({
-        image: base64Image  // Clean base64 - NO data:image/... prefix!
-      }),
-      timeout: 30000
-    });
+    console.log('📡 Roboflow URL:', url.replace(ROBOFLOW_API_KEY, '***'));
 
     // ============================================================
-    // FIX 3: Handle response with better error checking
+    // FIX: Try JSON first, fallback to binary if needed
     // ============================================================
+    let response;
+    try {
+      response = await axios({
+        method: 'POST',
+        url: url,
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        data: JSON.stringify({
+          image: base64Image
+        }),
+        timeout: 60000
+      });
+      console.log('✅ Roboflow JSON request successful');
+    } catch (jsonError) {
+      console.log('⚠️ JSON format failed, trying binary format...');
+      console.log('JSON error:', jsonError.response?.data || jsonError.message);
+      
+      response = await axios({
+        method: 'POST',
+        url: url,
+        headers: {
+          'Content-Type': 'application/octet-stream'
+        },
+        data: imageBuffer,
+        timeout: 60000
+      });
+      console.log('✅ Roboflow binary request successful');
+    }
+
+    // Handle response
     if (!response.data) {
       throw new Error('Empty response from Roboflow');
     }
 
-    // Check if response has error
     if (response.data.error) {
       throw new Error(`Roboflow API error: ${response.data.error}`);
     }
 
-    // Check if response has predictions
     if (!response.data.predictions || !Array.isArray(response.data.predictions)) {
-      // If no predictions, return empty result
       return {
         disease: 'Unknown',
         confidence: 0,
@@ -87,25 +102,15 @@ exports.detect = async (imageBuffer) => {
       };
     }
 
-    // ============================================================
-    // FIX 4: Better prediction sorting and selection
-    // ============================================================
-    // Sort predictions by confidence (highest first)
+    // Sort predictions by confidence
     const sortedPredictions = [...predictions].sort((a, b) => b.confidence - a.confidence);
     const top = sortedPredictions[0];
 
     const diseaseName = top.class || 'Unknown';
     const confidence = top.confidence || 0;
-
-    // Check if healthy (case insensitive)
     const healthy = diseaseName.toLowerCase().includes('healthy');
-
-    // Map to readable disease name
     const mappedDisease = DISEASE_MAPPING[diseaseName] || diseaseName;
 
-    // ============================================================
-    // FIX 5: Additional validation and logging
-    // ============================================================
     console.log(`🤖 Roboflow result: ${mappedDisease} (${(confidence * 100).toFixed(1)}%)`);
 
     return {
@@ -117,7 +122,6 @@ exports.detect = async (imageBuffer) => {
         confidence: p.confidence,
         bbox: p.bbox || null
       })),
-      // Include raw response for debugging (optional)
       rawResponse: {
         processing_time: response.data.time || null,
         image_size: response.data.image_size || null
@@ -127,16 +131,17 @@ exports.detect = async (imageBuffer) => {
   } catch (error) {
     console.error('❌ Roboflow API error:', error.message);
     
-    // ============================================================
-    // FIX 6: Better error handling with specific error types
-    // ============================================================
     if (error.response) {
       console.error('Response status:', error.response.status);
       console.error('Response data:', JSON.stringify(error.response.data, null, 2));
       
-      // Provide user-friendly error messages
       if (error.response.status === 400) {
-        throw new Error('Invalid image format. Please send a valid JPEG or PNG image.');
+        const errorMsg = error.response.data?.message || '';
+        if (errorMsg.includes('base64') || errorMsg.includes('Malformed')) {
+          throw new Error('Image format issue. Please ensure the image is a valid JPEG or PNG.');
+        } else {
+          throw new Error('Invalid image format. Please send a valid JPEG or PNG image.');
+        }
       } else if (error.response.status === 401) {
         throw new Error('Invalid Roboflow API key. Please check your credentials.');
       } else if (error.response.status === 429) {
@@ -152,9 +157,6 @@ exports.detect = async (imageBuffer) => {
   }
 };
 
-// ============================================================
-// FIX 7: More realistic mock data for testing
-// ============================================================
 function getMockResult() {
   const diseases = [
     { disease: 'Cassava Mosaic Disease', confidence: 0.94, healthy: false },

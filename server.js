@@ -22,8 +22,9 @@ app.set('trust proxy', 1);
 const storage = multer.memoryStorage();
 
 const fileFilter = (req, file, cb) => {
-  const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp'];
-  if (allowedTypes.includes(file.mimetype)) {
+  // Accept image types AND octet-stream (ESP32-CAM raw upload)
+  const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp', 'application/octet-stream'];
+  if (allowedTypes.includes(file.mimetype) || file.originalname.match(/\.(jpg|jpeg|png|webp)$/i)) {
     cb(null, true);
   } else {
     cb(new Error('Invalid file type. Only JPEG, PNG, WEBP are allowed'), false);
@@ -40,30 +41,34 @@ const upload = multer({
 
 // ============= MIDDLEWARE =============
 
-// Security
-app.use(helmet());
+// Security - Disable HSTS for ESP32-CAM compatibility
+app.use(helmet({
+  hsts: false
+}));
 
 // Compression
 app.use(compression());
 
-// CORS
+// CORS - Allow all origins for ESP32-CAM
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || '*',
+  origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'Content-Length']
 }));
 
 // Logging
 app.use(morgan('combined'));
 
-// Body parsing
+// Body parsing - Support raw binary for ESP32-CAM
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.raw({ type: 'image/*', limit: '50mb' }));
+app.use(express.raw({ type: 'application/octet-stream', limit: '50mb' }));
 
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
+  max: 100,
   message: {
     success: false,
     error: 'Too many requests, please try again later.'
@@ -93,6 +98,7 @@ app.get('/', (req, res) => {
       health: 'GET /health',
       diagnose: 'POST /api/diagnose (multipart/form-data with "image" field)',
       diagnose_base64: 'POST /api/diagnose (JSON with "image" field as base64)',
+      diagnose_raw: 'POST /api/diagnose (raw JPEG binary - for ESP32-CAM)',
       history: 'GET /api/history',
       history_limit: 'GET /api/history?limit=10'
     }

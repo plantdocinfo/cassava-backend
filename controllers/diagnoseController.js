@@ -10,29 +10,68 @@ exports.diagnoseLeaf = async (req, res) => {
     let fileSize;
     let originalName = 'leaf.jpg';
 
-    // Handle different input formats
+    // ============================================================
+    // FIX: Handle multiple input formats for ESP32-CAM
+    // ============================================================
+
+    // 1. Multipart/form-data (standard)
     if (req.file) {
-      // Multer file upload
       imageBuffer = req.file.buffer;
       fileSize = req.file.size;
       originalName = req.file.originalname || 'leaf.jpg';
-    } else if (req.body.image) {
-      // Base64 image
-      const base64Data = req.body.image.replace(/^data:image\/\w+;base64,/, '');
+      console.log(`📷 Received multipart image: ${fileSize} bytes`);
+    }
+    // 2. Base64 JSON
+    else if (req.body && req.body.image) {
+      let base64Data = req.body.image;
+      base64Data = base64Data.replace(/^data:image\/\w+;base64,/, '');
       imageBuffer = Buffer.from(base64Data, 'base64');
       fileSize = imageBuffer.length;
-    } else if (req.body && Buffer.isBuffer(req.body)) {
-      // Raw binary
+      originalName = req.body.filename || 'leaf.jpg';
+      console.log(`📷 Received base64 image: ${fileSize} bytes`);
+    }
+    // 3. Raw binary (ESP32-CAM direct POST)
+    else if (req.body && Buffer.isBuffer(req.body)) {
       imageBuffer = req.body;
       fileSize = req.body.length;
-    } else {
+      console.log(`📷 Received raw binary image: ${fileSize} bytes`);
+    }
+    // 4. Raw body as string (fallback)
+    else if (req.body && typeof req.body === 'string' && req.body.length > 100) {
+      try {
+        imageBuffer = Buffer.from(req.body, 'base64');
+        fileSize = imageBuffer.length;
+        console.log(`📷 Received base64 string image: ${fileSize} bytes`);
+      } catch (e) {
+        console.log('Failed to parse as base64, trying as raw text');
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid image format. Please send JPEG or base64.'
+        });
+      }
+    }
+    else {
+      console.log('❌ No image found in request');
       return res.status(400).json({
         success: false,
-        error: 'No image provided. Send as binary JPEG or base64.'
+        error: 'No image provided. Send as multipart/form-data, base64 JSON, or raw binary.',
+        received: {
+          hasFile: !!req.file,
+          hasBodyImage: !!(req.body && req.body.image),
+          bodyType: typeof req.body,
+          bodyLength: req.body ? req.body.length : 0
+        }
       });
     }
 
     // Validate image
+    if (!imageBuffer || imageBuffer.length < 100) {
+      return res.status(400).json({
+        success: false,
+        error: 'Image is too small or empty. Received: ' + (imageBuffer ? imageBuffer.length : 0) + ' bytes'
+      });
+    }
+
     const validation = validateImage(imageBuffer);
     if (!validation.valid) {
       return res.status(400).json({
@@ -43,17 +82,17 @@ exports.diagnoseLeaf = async (req, res) => {
 
     console.log(`📷 Processing image: ${fileSize} bytes`);
 
-    // ========== STEP 1: Upload to Cloudinary ==========
-    console.log('☁️ Uploading to Cloudinary...');
-    
-    // Optimize image before upload
+    // ========== STEP 1: Optimize Image ==========
+    console.log('🖼️ Optimizing image...');
     const optimizedBuffer = await optimizeImage(imageBuffer, {
       maxWidth: 1200,
       maxHeight: 1200,
       quality: 80,
       format: 'jpeg'
     });
-    
+
+    // ========== STEP 2: Upload to Cloudinary ==========
+    console.log('☁️ Uploading to Cloudinary...');
     const cloudinaryResult = await cloudinaryService.uploadImage(
       optimizedBuffer,
       originalName,
@@ -68,17 +107,16 @@ exports.diagnoseLeaf = async (req, res) => {
 
     if (!cloudinaryResult.success) {
       console.error('Cloudinary upload failed:', cloudinaryResult.error);
-      // Continue with diagnosis even if Cloudinary fails
     } else {
       console.log(`✅ Cloudinary upload success: ${cloudinaryResult.url}`);
     }
 
-    // ========== STEP 2: Send to Roboflow ==========
+    // ========== STEP 3: Send to Roboflow ==========
     console.log('🤖 Sending to Roboflow...');
-    const roboflowResult = await roboflowService.detect(imageBuffer);
+    const roboflowResult = await roboflowService.detect(optimizedBuffer);
     console.log('✅ Roboflow response received');
 
-    // ========== STEP 3: Prepare response ==========
+    // ========== STEP 4: Prepare response ==========
     const response = {
       success: true,
       disease: roboflowResult.disease,
@@ -88,7 +126,6 @@ exports.diagnoseLeaf = async (req, res) => {
       timestamp: new Date().toISOString()
     };
 
-    // Add Cloudinary info if available
     if (cloudinaryResult.success) {
       response.image = {
         url: cloudinaryResult.url,
@@ -101,7 +138,7 @@ exports.diagnoseLeaf = async (req, res) => {
       };
     }
 
-    // ========== STEP 4: Save to database ==========
+    // ========== STEP 5: Save to database ==========
     try {
       if (databaseService.isConnected()) {
         const record = {
@@ -129,7 +166,8 @@ exports.diagnoseLeaf = async (req, res) => {
     console.error('❌ Diagnosis error:', error.message);
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to diagnose image'
+      error: error.message || 'Failed to diagnose image',
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 };
