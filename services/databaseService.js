@@ -17,6 +17,7 @@ function initDatabase() {
     // Use neon serverless or standard pg pool
     if (databaseUrl.includes('neon.tech')) {
       pool = neon(databaseUrl);
+      console.log('✅ Using Neon serverless driver');
     } else {
       pool = new Pool({
         connectionString: databaseUrl,
@@ -24,6 +25,7 @@ function initDatabase() {
           rejectUnauthorized: false
         }
       });
+      console.log('✅ Using PostgreSQL pool');
     }
 
     isConnected = true;
@@ -56,6 +58,8 @@ async function initializeTables() {
         confidence FLOAT NOT NULL,
         healthy BOOLEAN DEFAULT FALSE,
         image_size INTEGER,
+        image_url TEXT,
+        image_public_id VARCHAR(255),
         predictions JSONB,
         timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
@@ -64,7 +68,8 @@ async function initializeTables() {
       CREATE INDEX IF NOT EXISTS idx_diagnoses_disease ON diagnoses(disease);
     `;
 
-    await pool.query(createTableSQL);
+    // Fix: Use pool() not pool.query() for Neon
+    await pool(createTableSQL);
     console.log('✅ Database tables initialized');
   } catch (error) {
     console.warn('⚠️ Table initialization failed:', error.message);
@@ -83,8 +88,8 @@ async function saveDiagnosis(record) {
 
   try {
     const sql = `
-      INSERT INTO diagnoses (id, disease, confidence, healthy, image_size, predictions, timestamp)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      INSERT INTO diagnoses (id, disease, confidence, healthy, image_size, image_url, image_public_id, predictions, timestamp)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING id
     `;
 
@@ -94,12 +99,15 @@ async function saveDiagnosis(record) {
       record.confidence,
       record.healthy,
       record.image_size || 0,
+      record.image_url || null,
+      record.image_public_id || null,
       JSON.stringify(record.predictions || []),
       record.timestamp || new Date().toISOString()
     ];
 
-    const result = await pool.query(sql, values);
-    return result.rows[0]?.id || false;
+    // Fix: Use pool() not pool.query() for Neon
+    const result = await pool(sql, values);
+    return result[0]?.id || false;  // Neon returns array
   } catch (error) {
     console.error('❌ Save diagnosis error:', error.message);
     return false;
@@ -115,21 +123,21 @@ async function getHistory(limit = 10, offset = 0) {
 
   try {
     // Get total count
-    const countResult = await pool.query('SELECT COUNT(*) FROM diagnoses');
-    const total = parseInt(countResult.rows[0]?.count || 0);
+    const countResult = await pool('SELECT COUNT(*) FROM diagnoses');
+    const total = parseInt(countResult[0]?.count || 0);
 
     // Get records
     const sql = `
-      SELECT id, disease, confidence, healthy, timestamp
+      SELECT id, disease, confidence, healthy, image_url, timestamp
       FROM diagnoses
       ORDER BY timestamp DESC
       LIMIT $1 OFFSET $2
     `;
 
-    const result = await pool.query(sql, [limit, offset]);
+    const result = await pool(sql, [limit, offset]);
     
     return {
-      records: result.rows,
+      records: result || [],
       total: total
     };
   } catch (error) {
@@ -147,13 +155,13 @@ async function getRecord(id) {
 
   try {
     const sql = `
-      SELECT id, disease, confidence, healthy, image_size, predictions, timestamp
+      SELECT id, disease, confidence, healthy, image_size, image_url, image_public_id, predictions, timestamp
       FROM diagnoses
       WHERE id = $1
     `;
 
-    const result = await pool.query(sql, [id]);
-    return result.rows[0] || null;
+    const result = await pool(sql, [id]);
+    return result[0] || null;
   } catch (error) {
     console.error('❌ Get record error:', error.message);
     return null;
@@ -169,39 +177,11 @@ async function deleteRecord(id) {
 
   try {
     const sql = 'DELETE FROM diagnoses WHERE id = $1 RETURNING id';
-    const result = await pool.query(sql, [id]);
-    return (result.rows[0]?.id || false);
+    const result = await pool(sql, [id]);
+    return (result[0]?.id || false);
   } catch (error) {
     console.error('❌ Delete record error:', error.message);
     return false;
-  }
-}
-
-async function initializeTables() {
-  if (!isConnectedFn()) return;
-
-  try {
-    const createTableSQL = `
-      CREATE TABLE IF NOT EXISTS diagnoses (
-        id UUID PRIMARY KEY,
-        disease VARCHAR(100) NOT NULL,
-        confidence FLOAT NOT NULL,
-        healthy BOOLEAN DEFAULT FALSE,
-        image_size INTEGER,
-        image_url TEXT,
-        image_public_id VARCHAR(255),
-        predictions JSONB,
-        timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-      );
-      
-      CREATE INDEX IF NOT EXISTS idx_diagnoses_timestamp ON diagnoses(timestamp DESC);
-      CREATE INDEX IF NOT EXISTS idx_diagnoses_disease ON diagnoses(disease);
-    `;
-
-    await pool.query(createTableSQL);
-    console.log('✅ Database tables initialized');
-  } catch (error) {
-    console.warn('⚠️ Table initialization failed:', error.message);
   }
 }
 

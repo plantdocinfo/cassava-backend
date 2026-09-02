@@ -25,16 +25,22 @@ exports.detect = async (imageBuffer) => {
   }
 
   try {
+    // FIX: Convert to base64 for Roboflow
+    const base64Image = imageBuffer.toString('base64');
+
     const url = `${ROBOFLOW_URL}/${ROBOFLOW_MODEL}?api_key=${ROBOFLOW_API_KEY}`;
 
+    // FIX: Use x-www-form-urlencoded with base64
     const response = await axios({
       method: 'POST',
       url: url,
       headers: {
-        'Content-Type': 'application/octet-stream'
+        'Content-Type': 'application/x-www-form-urlencoded'
       },
-      data: imageBuffer,
-      timeout: 30000 // 30 seconds
+      data: new URLSearchParams({
+        image: base64Image
+      }),
+      timeout: 30000
     });
 
     // Parse Roboflow response

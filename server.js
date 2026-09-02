@@ -15,6 +15,9 @@ const historyRoutes = require('./routes/history');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ============= FIX: Trust Proxy (for Render) =============
+app.set('trust proxy', 1);
+
 // ============= MULTER CONFIGURATION =============
 const storage = multer.memoryStorage();
 
