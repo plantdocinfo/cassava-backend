@@ -60,32 +60,48 @@ app.use(cors({
 app.use(morgan('combined'));
 
 // ============================================================
-// CRITICAL FIX: Handle raw binary body BEFORE JSON middleware
-// This allows the ESP32-CAM to send raw JPEG data
+// CRITICAL FIX: Handle raw binary body FIRST
 // ============================================================
 
-// First, check if the request is a raw binary image
-app.use((req, res, next) => {
-  // Skip for non-POST requests or if content-type is already set
-  if (req.method !== 'POST') return next();
+// Use express.raw() middleware BEFORE json() to capture raw bodies
+// This is the SIMPLEST way to handle raw binary data
+app.use('/api/diagnose', (req, res, next) => {
+  // Skip if already processed
+  if (req._rawBodyHandled) return next();
   
+  // Check if this is a raw binary request
   const contentType = req.headers['content-type'] || '';
+  const isRawImage = contentType.includes('image/jpeg') || 
+                     contentType.includes('image/png') || 
+                     contentType.includes('application/octet-stream') ||
+                     contentType.includes('image/webp');
   
-  // If it's a raw image or octet-stream, capture the raw body
-  if (contentType.includes('image/jpeg') || 
-      contentType.includes('image/png') || 
-      contentType.includes('image/webp') ||
-      contentType.includes('application/octet-stream')) {
-    
+  if (isRawImage) {
+    // Collect raw data
     let rawData = [];
     req.on('data', (chunk) => {
       rawData.push(chunk);
     });
     req.on('end', () => {
       if (rawData.length > 0) {
-        req.rawBody = Buffer.concat(rawData);
-        // Also store as body for compatibility
-        req.body = req.rawBody;
+        const buffer = Buffer.concat(rawData);
+        req.rawBody = buffer;
+        req._rawBodyHandled = true;
+        console.log(`📷 Captured raw image: ${buffer.length} bytes`);
+        
+        // Check if it's a valid JPEG
+        if (buffer.length > 10 && buffer[0] === 0xFF && buffer[1] === 0xD8) {
+          console.log('✅ Valid JPEG detected');
+          // Store as file for multer compatibility
+          req.file = {
+            buffer: buffer,
+            size: buffer.length,
+            originalname: 'leaf.jpg',
+            mimetype: 'image/jpeg'
+          };
+        } else {
+          console.log('⚠️ Not a valid JPEG (no FF D8 header)');
+        }
       }
       next();
     });
@@ -136,27 +152,6 @@ app.get('/', (req, res) => {
       history_limit: 'GET /api/history?limit=10'
     }
   });
-});
-
-// ============================================================
-// CRITICAL FIX: Custom middleware for /api/diagnose to handle raw body
-// ============================================================
-app.use('/api/diagnose', (req, res, next) => {
-  // If we captured a raw body and it's not multipart, attach it
-  if (req.rawBody && !req.file) {
-    // Check if it's a valid JPEG (starts with 0xFF 0xD8)
-    if (req.rawBody.length > 10 && req.rawBody[0] === 0xFF && req.rawBody[1] === 0xD8) {
-      // Create a file-like object for the controller
-      req.file = {
-        buffer: req.rawBody,
-        size: req.rawBody.length,
-        originalname: 'leaf.jpg',
-        mimetype: 'image/jpeg'
-      };
-      console.log('📷 Raw JPEG detected and attached to request');
-    }
-  }
-  next();
 });
 
 // API Routes with multer for file uploads
