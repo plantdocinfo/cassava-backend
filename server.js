@@ -5,7 +5,6 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
-const multer = require('multer');
 
 // Import routes
 const diagnoseRoutes = require('./routes/diagnose');
@@ -15,29 +14,8 @@ const historyRoutes = require('./routes/history');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ============= FIX: Trust Proxy (for Render) =============
+// ============= Trust Proxy (for Render) =============
 app.set('trust proxy', 1);
-
-// ============= MULTER CONFIGURATION =============
-const storage = multer.memoryStorage();
-
-const fileFilter = (req, file, cb) => {
-  // Accept all image types and octet-stream
-  const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp', 'application/octet-stream'];
-  if (allowedTypes.includes(file.mimetype) || file.originalname.match(/\.(jpg|jpeg|png|webp)$/i)) {
-    cb(null, true);
-  } else {
-    cb(new Error('Invalid file type. Only JPEG, PNG, WEBP are allowed'), false);
-  }
-};
-
-const upload = multer({
-  storage: storage,
-  limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB
-  },
-  fileFilter: fileFilter
-});
 
 // ============= MIDDLEWARE =============
 
@@ -60,57 +38,96 @@ app.use(cors({
 app.use(morgan('combined'));
 
 // ============================================================
-// CRITICAL FIX: Handle raw binary body FIRST
+// Raw binary body capture for /api/diagnose (ESP32-CAM uploads)
 // ============================================================
+// IMPORTANT: this is the ONLY body-reading middleware for this route.
+// A previous version also ran `multer`'s upload.single('image') on the
+// same route AFTER this middleware -- since an HTTP request body is a
+// stream that can only be consumed once, that second middleware sat
+// waiting forever for data that had already been fully read here. The
+// request never completed, so it never logged and never reached the
+// controller. Do not add a second body-parsing middleware to this route
+// without removing or properly gating this one.
 
-// Use express.raw() middleware BEFORE json() to capture raw bodies
-// This is the SIMPLEST way to handle raw binary data
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10MB cap
+const RAW_BODY_STALL_TIMEOUT_MS = 30000;   // abort if data stops arriving
+
 app.use('/api/diagnose', (req, res, next) => {
-  // Skip if already processed
   if (req._rawBodyHandled) return next();
-  
-  // Check if this is a raw binary request
+
   const contentType = req.headers['content-type'] || '';
-  const isRawImage = contentType.includes('image/jpeg') || 
-                     contentType.includes('image/png') || 
-                     contentType.includes('application/octet-stream') ||
-                     contentType.includes('image/webp');
-  
-  if (isRawImage) {
-    // Collect raw data
-    let rawData = [];
-    req.on('data', (chunk) => {
-      rawData.push(chunk);
-    });
-    req.on('end', () => {
-      if (rawData.length > 0) {
-        const buffer = Buffer.concat(rawData);
-        req.rawBody = buffer;
-        req._rawBodyHandled = true;
-        console.log(`📷 Captured raw image: ${buffer.length} bytes`);
-        
-        // Check if it's a valid JPEG
-        if (buffer.length > 10 && buffer[0] === 0xFF && buffer[1] === 0xD8) {
-          console.log('✅ Valid JPEG detected');
-          // Store as file for multer compatibility
-          req.file = {
-            buffer: buffer,
-            size: buffer.length,
-            originalname: 'leaf.jpg',
-            mimetype: 'image/jpeg'
-          };
-        } else {
-          console.log('⚠️ Not a valid JPEG (no FF D8 header)');
-        }
+  const isRawImage = contentType.includes('image/jpeg') ||
+                      contentType.includes('image/png') ||
+                      contentType.includes('application/octet-stream') ||
+                      contentType.includes('image/webp');
+
+  if (!isRawImage) return next();
+
+  let rawData = [];
+  let totalBytes = 0;
+  let finished = false;
+
+  const stallTimer = setTimeout(() => {
+    if (finished) return;
+    finished = true;
+    console.log('⏱️ Raw body collection stalled -- aborting');
+    res.status(408).json({ success: false, error: 'Upload stalled or timed out' });
+  }, RAW_BODY_STALL_TIMEOUT_MS);
+
+  req.on('data', (chunk) => {
+    if (finished) return;
+
+    totalBytes += chunk.length;
+    if (totalBytes > MAX_IMAGE_BYTES) {
+      finished = true;
+      clearTimeout(stallTimer);
+      res.status(413).json({ success: false, error: 'Image too large (max 10MB)' });
+      req.destroy();
+      return;
+    }
+    rawData.push(chunk);
+  });
+
+  req.on('end', () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(stallTimer);
+
+    if (rawData.length > 0) {
+      const buffer = Buffer.concat(rawData);
+      req.rawBody = buffer;
+      req._rawBodyHandled = true;
+      console.log(`📷 Captured raw image: ${buffer.length} bytes`);
+
+      if (buffer.length > 10 && buffer[0] === 0xFF && buffer[1] === 0xD8) {
+        console.log('✅ Valid JPEG detected');
+        req.file = {
+          buffer: buffer,
+          size: buffer.length,
+          originalname: 'leaf.jpg',
+          mimetype: 'image/jpeg'
+        };
+      } else {
+        console.log('⚠️ Not a valid JPEG (no FF D8 header)');
       }
-      next();
-    });
-  } else {
+    }
     next();
-  }
+  });
+
+  req.on('error', (err) => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(stallTimer);
+    console.error('❌ Raw body stream error:', err.message);
+    res.status(400).json({ success: false, error: 'Upload stream error' });
+  });
 });
 
-// Then apply JSON and URL-encoded middleware
+// JSON / URL-encoded support for non-image clients (e.g. a future web
+// dashboard sending base64). These skip automatically for content types
+// they don't recognize, so they don't conflict with the raw-body reader
+// above -- by the time a request reaches here, an image/jpeg request has
+// already had its body fully consumed and req._rawBodyHandled is true.
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -145,17 +162,18 @@ app.get('/', (req, res) => {
     version: '2.0.0',
     endpoints: {
       health: 'GET /health',
-      diagnose: 'POST /api/diagnose (multipart/form-data with "image" field)',
+      diagnose_raw: 'POST /api/diagnose (raw JPEG binary - ESP32-CAM)',
       diagnose_base64: 'POST /api/diagnose (JSON with "image" field as base64)',
-      diagnose_raw: 'POST /api/diagnose (raw JPEG binary - for ESP32-CAM)',
       history: 'GET /api/history',
       history_limit: 'GET /api/history?limit=10'
     }
   });
 });
 
-// API Routes with multer for file uploads
-app.use('/api/diagnose', upload.single('image'), diagnoseRoutes);
+// API Routes -- no multer here; the raw-body middleware above already
+// populates req.file/req.rawBody for the ESP32's raw JPEG uploads, and
+// the controller's base64/JSON fallback path covers other clients.
+app.use('/api/diagnose', diagnoseRoutes);
 app.use('/api/history', historyRoutes);
 
 // 404 handler
