@@ -1,4 +1,5 @@
 const axios = require('axios');
+const FormData = require('form-data');
 
 // Configuration
 const ROBOFLOW_API_KEY = process.env.ROBOFLOW_API_KEY;
@@ -32,30 +33,31 @@ exports.detect = async (imageBuffer) => {
   try {
     console.log(`📤 Sending image to Roboflow (${(imageBuffer.length / 1024).toFixed(1)} KB)`);
 
+    // ============================================================
+    // FIX: Use multipart/form-data format (most reliable)
+    // ============================================================
+    const formData = new FormData();
+    
+    // Create a file-like object from the buffer
+    const fileStream = require('stream').Readable.from(imageBuffer);
+    formData.append('file', fileStream, {
+      filename: 'image.jpg',
+      contentType: 'image/jpeg'
+    });
+
     const url = `${ROBOFLOW_URL}/${ROBOFLOW_MODEL}?api_key=${ROBOFLOW_API_KEY}`;
     console.log('📡 Roboflow URL:', url.replace(ROBOFLOW_API_KEY, '***'));
 
     // ============================================================
-    // FIX: Convert to base64 WITH data URL prefix
-    // Roboflow expects: data:image/jpeg;base64,/9j/4AAQSkZJRg...
-    // ============================================================
-    const base64Image = imageBuffer.toString('base64');
-    const dataUrlImage = `data:image/jpeg;base64,${base64Image}`;
-    
-    console.log(`📷 Base64 length: ${base64Image.length} chars`);
-
-    // ============================================================
-    // Use JSON format with data URL prefix (Roboflow's expected format)
+    // Use multipart/form-data with file upload
     // ============================================================
     const response = await axios({
       method: 'POST',
       url: url,
       headers: {
-        'Content-Type': 'application/json'
+        ...formData.getHeaders()
       },
-      data: JSON.stringify({
-        image: dataUrlImage  // WITH data:image/jpeg;base64, prefix!
-      }),
+      data: formData,
       timeout: 60000,
       maxContentLength: Infinity,
       maxBodyLength: Infinity
