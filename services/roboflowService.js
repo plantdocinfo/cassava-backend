@@ -1,5 +1,4 @@
 const axios = require('axios');
-const FormData = require('form-data');
 
 // Configuration
 const ROBOFLOW_API_KEY = process.env.ROBOFLOW_API_KEY;
@@ -37,46 +36,31 @@ exports.detect = async (imageBuffer) => {
     console.log('📡 Roboflow URL:', url.replace(ROBOFLOW_API_KEY, '***'));
 
     // ============================================================
-    // METHOD 1: Try binary format (most reliable for JPEG)
+    // FIX: Convert to base64 WITH data URL prefix
+    // Roboflow expects: data:image/jpeg;base64,/9j/4AAQSkZJRg...
     // ============================================================
-    let response;
-    try {
-      response = await axios({
-        method: 'POST',
-        url: url,
-        headers: {
-          'Content-Type': 'application/octet-stream'
-        },
-        data: imageBuffer,  // Send raw binary
-        timeout: 60000,
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity
-      });
-      console.log('✅ Roboflow binary request successful');
-    } catch (binaryError) {
-      console.log('⚠️ Binary format failed, trying base64 format...');
-      console.log('Binary error:', binaryError.response?.data || binaryError.message);
-      
-      // ============================================================
-      // METHOD 2: Try base64 format with proper encoding
-      // ============================================================
-      const base64Image = imageBuffer.toString('base64');
-      
-      response = await axios({
-        method: 'POST',
-        url: url,
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        data: new URLSearchParams({
-          image: base64Image
-        }),
-        timeout: 60000,
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity
-      });
-      console.log('✅ Roboflow base64 request successful');
-    }
+    const base64Image = imageBuffer.toString('base64');
+    const dataUrlImage = `data:image/jpeg;base64,${base64Image}`;
+    
+    console.log(`📷 Base64 length: ${base64Image.length} chars`);
+
+    // ============================================================
+    // Use JSON format with data URL prefix (Roboflow's expected format)
+    // ============================================================
+    const response = await axios({
+      method: 'POST',
+      url: url,
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      data: JSON.stringify({
+        image: dataUrlImage  // WITH data:image/jpeg;base64, prefix!
+      }),
+      timeout: 60000,
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity
+    });
+    console.log('✅ Roboflow request successful');
 
     // Handle response
     if (!response.data) {
