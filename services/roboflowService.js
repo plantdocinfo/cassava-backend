@@ -40,37 +40,20 @@ exports.detect = async (imageBuffer) => {
     console.log('📡 Roboflow URL:', url.replace(ROBOFLOW_API_KEY, '***'));
 
     // ============================================================
-    // FIX: Try JSON first, fallback to binary if needed
+    // FIX: Use ONLY JSON format with base64-encoded image
     // ============================================================
-    let response;
-    try {
-      response = await axios({
-        method: 'POST',
-        url: url,
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        data: JSON.stringify({
-          image: base64Image
-        }),
-        timeout: 60000
-      });
-      console.log('✅ Roboflow JSON request successful');
-    } catch (jsonError) {
-      console.log('⚠️ JSON format failed, trying binary format...');
-      console.log('JSON error:', jsonError.response?.data || jsonError.message);
-      
-      response = await axios({
-        method: 'POST',
-        url: url,
-        headers: {
-          'Content-Type': 'application/octet-stream'
-        },
-        data: imageBuffer,
-        timeout: 60000
-      });
-      console.log('✅ Roboflow binary request successful');
-    }
+    const response = await axios({
+      method: 'POST',
+      url: url,
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      data: JSON.stringify({
+        image: base64Image  // Clean base64 - NO data:image/... prefix!
+      }),
+      timeout: 60000
+    });
+    console.log('✅ Roboflow JSON request successful');
 
     // Handle response
     if (!response.data) {
@@ -137,7 +120,7 @@ exports.detect = async (imageBuffer) => {
       
       if (error.response.status === 400) {
         const errorMsg = error.response.data?.message || '';
-        if (errorMsg.includes('base64') || errorMsg.includes('Malformed')) {
+        if (errorMsg.includes('base64') || errorMsg.includes('Malformed') || errorMsg.includes('Invalid base64')) {
           throw new Error('Image format issue. Please ensure the image is a valid JPEG or PNG.');
         } else {
           throw new Error('Invalid image format. Please send a valid JPEG or PNG image.');
